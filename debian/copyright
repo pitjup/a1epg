@@ -1,0 +1,7 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: austrian EPG grabber for A1 IPTV
+Source: http://github.com/pitjup/tv_grab_at_a1
+
+Files: *
+Copyright: 2020-2021 Peter Gerhard <swdmad@gmx.de>
+License: GPL-2

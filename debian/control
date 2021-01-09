@@ -1,0 +1,15 @@
+Source: tv_grab_at_a1 
+Section: video
+Priority: optional
+Maintainer: Peter Gerhard, <swdmad@gmx.de>
+XSBC-Original-Maintainer: Peter Gerhard <swdmad@gmx.de>
+Build-Depends: debhelper (>= 7), python-all, python-dev, python-all-dev
+Standards-Version: 3.9.6
+X-Python-Version: >= 2.6
+Homepage: https://github.com/pitjup/tv_grab_at_a1
+Vcs-Browser: https://github.com/pitjup/tv_grab_at_a1.git
+
+Package: tv_grab_at_a1
+Architecture: all
+Depends: python (>= 2.6.6-3~), ${shlibs:Depends}, ${misc:Depends}
+Description: EPG grabber for austrian IPTV provider A1. This tool creates XML data, which can be used with tvheadend
