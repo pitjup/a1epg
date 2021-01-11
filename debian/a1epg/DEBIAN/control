@@ -1,0 +1,11 @@
+Package: a1epg
+Version: 1.0
+Architecture: all
+Maintainer: Peter Gerhard, <swdmad@gmx.de>
+Installed-Size: 39
+Depends: python3.7 (>= 3.7.3)
+Section: video
+Priority: optional
+Homepage: https://github.com/pitjup/a1epg
+Description: EPG grabber for austrian IPTV provider A1. This tool creates XML data, which can be used with tvheadend and kodi
+Original-Maintainer: Peter Gerhard <swdmad@gmx.de>

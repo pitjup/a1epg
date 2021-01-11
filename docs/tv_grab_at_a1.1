@@ -1,0 +1,35 @@
+.\" Manpage for tv_grab_at_a1.
+.\" Contact swdmad@gmx.de to correct errors or typos.
+.TH tv_grab_tv_a1 1 "09 Jan 2021" "1.0" "tv_grab_at_a1 man page"
+.SH NAME
+.B tv_grab_at_a1
+- extract the EPG for the austrian A1 IPTV provider and provide this as an XML to tvheadend. 
+.SH SYNOPSIS
+.B tv_grab_at_a1
+[ -c <config file> ] [ -h | -? | --help ] [ -U 
+\fI unix socket \fP ]
+.SH DESCRIPTION
+.B tv_grab_at_a1
+extracts EPG information for the austrian A1 IPTV provider and provides this as an xml. By default, the xml will be printed to stdout. 
+.SH OPTIONS
+.TP
+.B -h -? --help
+Display help information
+.TP
+.B -c --config_file \fI<config_file>\fP
+Specify a different configuration file, other than 
+.B /etc/tv_grab_at_a1.conf/tv_grab_at_a1.conf
+.TP
+.B -U \fI<unix socket>\fP
+Write the xml to that socket, instead to stout. To pass the xml to tvheadend use the following socket
+.I /home/hts/.hts/tvheadend/epggrab/xmltv.sock
+.SH FILES
+.TP
+.C /etc/conf/tv_grab_at_a1.conf
+Configuration file
+.SH SEE ALSO
+None
+.SH BUGS
+No known bugs.
+.SH AUTHOR
+Peter Gerhard (swdmad@gmx.de)

@@ -1,0 +1,430 @@
+#!/usr/bin/python3
+# coding: utf-8
+#
+from datetime import datetime
+import __main__
+import xml.etree.ElementTree as et
+import configparser
+import getopt
+import json
+import logging
+import logging.handlers
+import os.path
+import re
+import requests
+import socket
+import time
+import sys
+
+BASE_URL       = "https://epggw.a1.net/a/"
+START_URL      = BASE_URL + "api.mobile.start"
+STATIONS_URL   = BASE_URL + "api.mobile.station.get"
+EVENT_HOUR_URL = BASE_URL + "api.mobile.event.hour"
+EVENT_URL      = BASE_URL + "api.mobile.event.get"
+
+# Level of EPG information to retrive
+NO_EPG_INFORMATION      = '0'
+REDUCED_EPG_INFORMATION = '1'
+FULL_EPG_INFORMATION    = '2'
+
+# Default config file name
+CONFIG_FILE_NAME = '/etc/tv_grab_at_a1.conf'
+
+# Encoding
+ENCODING='UTF-8'
+
+# Section within the config file
+CHANNEL_SECTION = 'Channel'
+EPG_SECTION     = 'EPG'
+LOGGING_SECTION = 'Logging'
+
+# Options with the config file
+HOURS_OPTION  = 'Hours'
+LEVEL_OPTION  = 'Level'
+ICON_WIDTH = 'Width'
+ICON_HEIGHT = 'Height'
+
+################################################################################
+#
+# Set logging 
+#
+################################################################################
+def init_logging():
+    logger = logging.getLogger(os.path.basename(__main__.__file__))
+
+    # set overall debug level
+    logger.setLevel(logging.INFO)
+
+    # create syslog handler
+    loghandler = logging.handlers.SysLogHandler(address="/dev/log")
+
+    # create formatter
+    formatter = logging.Formatter('%(name)s: %(levelname)s - %(message)s')
+
+    # add formatter to syslog handler
+    loghandler.setFormatter(formatter)
+
+    # add loghandler to logger
+    logger.addHandler(loghandler)
+
+    return logger
+
+################################################################################
+#
+# Read config 
+#
+################################################################################
+def read_config(config_filename, logger):
+#   save_config will be set to True in case the config file is changed
+#   within this function module
+    save_config = False
+
+    # Default values in case no config file is available or some
+    # of the options are missing in the config file
+    # EPG is retived for the next 168 hours (7 days)
+    default_config = { EPG_SECTION : { HOURS_OPTION : '168' ,
+                                       ICON_WIDTH : '256' ,
+                                       ICON_HEIGHT : '256' } ,
+                       LOGGING_SECTION : { LEVEL_OPTION : str(logging.INFO) }} 
+
+    config = configparser.ConfigParser()
+    try:
+        logger.info('Using config file "%s"', config_filename)
+        config_file_handler = open(config_filename)
+    except FileNotFoundError:
+        logger.debug('Error while reading config file %s', config_filename) 
+    else:
+        config.read_file(config_file_handler)
+        config_file_handler.close()
+
+    # Validate the amount of hours to get the EPG
+    if config.has_option(EPG_SECTION, HOURS_OPTION):
+        hours = config.getint(EPG_SECTION, HOURS_OPTION)
+        if hours < 1 or hours > 168:
+            logger.error('Option "Hours" removed, because value must be between 1 and 148, was "%s"', config.get(EPG_SECTION, HOURS_OPTION))
+            # In case the value is not valid, it is removed so it will later
+            # be filled with the default value
+            config.remove_option(EPG_SECTION, HOURS_OPTION)
+            save_config = True
+
+    # Validate the height of the icons
+    if config.has_option(EPG_SECTION, ICON_HEIGHT):
+        height = config.getint(EPG_SECTION, ICON_HEIGHT)
+        if height < 1:
+            logger.error('Option "Height" removed, because value must be > 0, was "%s"', config.get(EPG_SECTION, ICON_HEIGHT))
+            # In case the value is not valid, it is removed so it will later
+            # be filled with the default value
+            config.remove_option(EPG_SECTION, ICON_HEIGHT)
+            save_config = True
+
+    # Validate the width of the icons
+    if config.has_option(EPG_SECTION, ICON_WIDTH):
+        width = config.getint(EPG_SECTION, ICON_WIDTH)
+        if width < 1:
+            logger.error('Option "Width" removed, because value must be > 0, was "%s"', config.get(EPG_SECTION, ICON_WIDTH))
+            # In case the value is not valid, it is removed so it will later
+            # be filled with the default value
+            config.remove_option(EPG_SECTION, ICON_WIDTH)
+            save_config = True
+
+    # Validate the logging level
+    if config.has_option(LOGGING_SECTION, LEVEL_OPTION):
+        level = config.getint(LOGGING_SECTION, LEVEL_OPTION)
+        if not level in [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
+            logger.error('Option "Level" removed, because of incorrect value, was "%s"', config.get(LOGGING_SECTION, LEVEL_OPTION))
+            # In case the value is not valid, it is removed so it will later
+            # be filled with the default value
+            config.remove_option(LOGGIN_SECTION, LEVEL_OPTION)
+            save_config = True
+
+    # Validate the Channels
+    if config.has_section(CHANNEL_SECTION):
+        for channel in config.items(CHANNEL_SECTION):
+            if not channel[1] in [NO_EPG_INFORMATION, REDUCED_EPG_INFORMATION, FULL_EPG_INFORMATION]:
+                logger.error('invalid epg information "%s" for channel %s. Value reset to 2', channel[1], channel[0]) 
+                # reset the value to FULL_EPG_INFORMATION in case of an 
+                # invalid value
+                config.set(CHANNEL_SECTION, channel[0], FULL_EPG_INFORMATION)
+                save_config = True
+
+    # all missing config keys are copied from the default config
+    for section in default_config:
+        # make sure the section exists
+        if not config.has_section(section):
+           # Create section
+           logger.info('Section %s added', section)
+           config.add_section(section)
+           save_config = True
+
+        # make sure the options exist
+        for option in default_config[section]:
+           if not config.has_option(section, option):
+              logger.info('Option %s in Section %s added', option, section)
+              config.set(section, option, default_config[section][option])
+              save_config = True
+
+    return config, save_config
+
+################################################################################
+#
+# main programm 
+#
+################################################################################
+
+# global Variables
+config_filename = os.path.expanduser('˜') + CONFIG_FILE_NAME
+save_config = False
+socket_filename = ''
+start_time = time.time()
+usage = 'tv_grab_at_a1 [-c | --configfile <configfile>] [-? | -h | --help] [ -U <socket> ]'
+
+try:
+    opts, args = getopt.getopt(sys.argv[1:], '?hc:U:', ['configfile', 'help'])
+except getopt.GetoptError:
+    print(usage)
+    sys.exit(2)
+
+for opt, arg in opts:
+    if opt in ['?', '-h', '--help']:
+        print(usage)
+        sys.exit(0)
+    elif opt in ['-c', '--confile']:
+        config_filename = arg
+    elif opt in ['-U']:
+        socket_filename = arg
+    else:
+        print(usage)
+        sys.exit(0)
+
+logger = init_logging()
+
+config, save_config = parameter = read_config(config_filename, logger)
+logger.setLevel(config.getint(LOGGING_SECTION, LEVEL_OPTION))
+
+# compile the reqular expresion to replace the default icon size
+# we want to replace a substring like "/60x30/"
+regex_icon_size = re.compile('/\d+x\d+/')
+
+# build the substring for the required icon size
+icon_size = '/' + config.get(EPG_SECTION, ICON_WIDTH) + 'x' + config.get(EPG_SECTION, ICON_HEIGHT) + '/'
+
+logger.debug(START_URL)
+request = requests.get(START_URL)
+
+if request.status_code != requests.codes.ok:
+    logger.error('Status %s', request.status_code)
+    sys.exit(2)
+
+# Currently we don't need the channels
+# channels = request.json()
+# 
+# categories = channels[2]
+
+# get all stations
+logger.debug(STATIONS_URL)
+station_response = requests.get(STATIONS_URL)
+
+if station_response.status_code != requests.codes.ok:
+    logger.error('%sstatus code: %s', STATIONS_URL, station_response.status_code)
+    sys.exti(2)
+
+# build dictionary with all stations
+stations = station_response.json()['data']
+
+tv = et.Element('tv', { 'generator-info-name' : sys.argv[0]})
+
+for station in stations:
+#   we are only interested in stations which are free to air (fta)
+    if 'fta' in station['Station']['Products']:
+        # Check if there is already an option for this channel
+        if not config.has_option(CHANNEL_SECTION, station['Station']['DisplayName'].lower()):
+            # make sure the necessary section exists for this option
+            if not config.has_section(CHANNEL_SECTION):
+                logger.info('Section %s added', CHANNEL_SECTION)
+                config.add_section(CHANNEL_SECTION)
+
+            # Add an option for the channel with full EPG information retrival
+            logger.info('Channel "%s" added to section %s', station['Station']['DisplayName'], CHANNEL_SECTION)
+            config.set(CHANNEL_SECTION, station['Station']['DisplayName'], REDUCED_EPG_INFORMATION)
+            save_config = True
+
+        # Check whether EPG information is wanted for this channel
+        if config.get(CHANNEL_SECTION, station['Station']['DisplayName']) == NO_EPG_INFORMATION:
+            continue
+
+        channel = et.SubElement(tv, 'channel', {'id' : str(station['Station']['UID'])})
+
+        display_name_element = et.SubElement(channel, 'display-name', {'lang' : 'DE'})
+        display_name_element.text = station['Station']['DisplayName']
+
+        # replace the default icon size with the required icon size
+        icon_uri = regex_icon_size.sub(icon_size, station['Station']['Logo']['URI'])
+        icon_element = et.SubElement(channel, 'icon', {'src' : icon_uri})
+
+        # for each station we extract the events for required amount of hours
+        #
+        # the service api.mobile.event.hour uses the following parameters
+        # - type       : "JSON.4"
+        # - stationuid : unique ID of the station as returned
+        #                by api.mobile.station.get
+        # - period     : start time and duration
+        # we call the service using todays date and current time and
+        # look for the programm for the amount of requested hours
+        eventhour_parameters = {'type': 'JSON.4',
+                                'stationuid': station['Station']['UID'],
+                                'period': datetime.now().strftime('%Y%m%dT%H%M')+'00/'+config.get(EPG_SECTION, HOURS_OPTION)+'H'
+                               }
+        logger.debug("%s stationoid %s period %s", EVENT_HOUR_URL, eventhour_parameters['stationuid'], eventhour_parameters["period"])
+        eventhour_response = requests.get(EVENT_HOUR_URL, params=eventhour_parameters)
+
+        if eventhour_response.status_code != requests.codes.ok:
+            logger.error('%s %s status code: %s', EVENT_HOUR_URL, eventhour_parameters, eventhour_response.status_code)
+            continue
+
+        # retrive the lists with all the events
+        events = eventhour_response.json()[1][0][2]
+
+        for event in events:
+            # make sure it is not an empty event
+            if len(event) == 0:
+                continue
+
+            eventelement = et.SubElement(tv, 'programme', {'start' : event[1][0:8] + event[1][9:17] + '00', 'stop' : event[2][0:8] + event[2][9:17] + '00', 'channel' : str(station['Station']['UID'])})
+            titleelement = et.SubElement(eventelement, 'title', { 'lang' : 'de'})
+            titleelement.text = event[3]
+
+            # In case for this channel only reduced information is required, 
+            # we can stop here for this channel
+            if config.get(CHANNEL_SECTION, station['Station']['DisplayName']) == REDUCED_EPG_INFORMATION:
+                continue
+
+            # for each event we extract the event details
+            #
+            # the service api.mobile.event.get uses the following parameters
+            # - type : "JSON.2"
+            # - evid : eventid
+            eventdetail_parameters = {"type": "JSON.2",
+                                      "evid": event[0]
+                                     }
+            # sometimes the detailed information is not retived on the first try. 
+            # therefore we try at most 3 times
+            for i in range(3):
+                logger.debug('%s EVID=%s', EVENT_URL, eventdetail_parameters["evid"])
+
+                eventdetail_response = requests.get(EVENT_URL, params=eventdetail_parameters)
+
+                if eventdetail_response.status_code != requests.codes.ok:
+                    continue
+
+                eventdetail = eventdetail_response.json(strict=False)
+
+                if eventdetail['head']['Status'] != requests.codes.ok:
+                    continue
+
+                break
+
+            if eventdetail_response.status_code != requests.codes.ok:
+                logger.error('%s %s status code %s', EVENT_URL, eventdetail_parameters, eventdetail_response.status_code)
+                continue
+
+            if eventdetail['head']['Status'] != requests.codes.ok:
+                logger.warning('%s %s %s %s status code %s', EVENT_URL, station['Station']['DisplayName'], event[1], eventdetail_parameters, eventdetail['head']['Status'])
+                description_element = et.SubElement(eventelement, 'desc', {'lang' : 'de'})
+                description_element.text = eventdetail['head']['Message']
+                continue
+       
+            eventdetail_data = eventdetail['data'][0]['Event']
+            for key in eventdetail_data:
+                if key == 'AgeRating':
+                    agerating_element = et.SubElement(eventelement, 'rating', {'system' : 'FMK'})
+                    agerating_element.text = str(eventdetail_data[key])
+                elif key == 'Copyright':
+                    # this information is not used
+                    pass
+                elif key == 'Country':
+                    for year in eventdetail_data[key]:
+                        country_element = et.SubElement(eventelement, 'country')
+                        country_element.text = str(year)
+                elif key == 'Description':
+                    description_element = et.SubElement(eventelement, 'desc', {'lang' : 'de'})
+                    description_element.text = eventdetail_data[key]
+                elif key == 'DisplayName':
+                    # Name of the station, this information was alread processed
+                    pass
+                elif key == 'Duration':
+                    duration_element = et.SubElement(eventelement, 'length', {'units' : 'seconds'})
+                    duration_element.text = str(eventdetail_data[key])
+                elif key == 'EndTime':
+                    # end time of the event
+                    pass
+                elif key == 'Genre':
+                    # Todo
+                    pass
+                elif key == 'ID':
+                    # not used 
+                    pass
+                elif key == 'Image':
+                    icon_element = et.SubElement(eventelement, 'icon', {'src' : eventdetail_data[key]})
+                elif key == 'Person':
+                    if len(eventdetail_data[key]) > 0:
+                        credits_element = et.SubElement(eventelement, 'credits')
+
+                        for person in eventdetail_data[key]:
+                            person_element = et.SubElement(credits_element, person[0])
+                            person_element.text = person[1]
+                elif key == 'StartTime':
+                    # start time of the event, this information was already processed
+                    pass
+                elif key == 'SubTitle':
+                    sub_title_element = et.SubElement(eventelement, 'sub-title', {'lang' : 'de'})
+                    sub_title_element.text = eventdetail_data[key]
+                elif key == 'StationUID':
+                    # UID of the station, not used 
+                    pass
+                elif key == 'Title':
+                    # title of the event, this information was already processed
+                    pass
+                elif key == 'Type':
+                    category_element = et.SubElement(eventelement, 'category', {'lang' : 'de'})
+                    category_element.text = eventdetail_data[key]
+                elif key == 'Year':
+                    if len(eventdetail_data[key]) > 0:
+                        date_element = et.SubElement(eventelement, 'date')
+                        date_element.text = str(eventdetail_data[key][0])
+                else:
+                    logger.warning('Channel %s: EventID %s: Unexpected item <%s> for', station['Station']['MapIAP'], event[0], key)
+
+
+# in case a socket parameter was specified, the output will be send
+# to that socket
+logger.debug('Socket filename: "%s"', socket_filename)
+
+if socket_filename:
+    socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    try:
+        logger.debug('Open socket %s', socket_filename)
+        socket.connect(socket_filename)
+    except socket.error:
+        logger.error('Error opening socket %s', socket_filename)
+    else:
+        xml_string = et.tostring(tv, encoding=ENCODING)
+        socket.sendall(xml_string)
+        logger.debug('Closing socket %s', socket_filename)
+        socket.close()
+else:
+    # otherwise the output will be printed
+    epg = et.ElementTree(tv)
+    epg.write(sys.stdout.buffer, encoding=ENCODING)
+
+if save_config == True:
+    try:
+        config_file_handler = open(config_filename, 'w')
+    except FileNotFoundError:
+        logger.debug('Error while opening file %s for writing', config_filename)
+    else:
+        logger.info('config file %s updated', config_filename)
+        config.write(config_file_handler)
+        config_file_handler.close()
+
+logger.info('Retrieving the EPG took %.2f seconds', time.time() - start_time)
