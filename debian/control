@@ -11,5 +11,5 @@ Vcs-Browser: https://github.com/pitjup/a1epg.git
 
 Package: a1epg
 Architecture: all
-Depends: python3.7 (>= 3.7.3), ${misc:Depends}
+Depends: python3.7 (>= 3.7.3), python3-requests (>= 2.21), ${misc:Depends}
 Description: EPG grabber for austrian IPTV provider A1. This tool creates XML data, which can be used with tvheadend and kodi

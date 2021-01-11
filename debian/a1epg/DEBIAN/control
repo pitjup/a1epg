@@ -3,7 +3,7 @@ Version: 1.0
 Architecture: all
 Maintainer: Peter Gerhard, <swdmad@gmx.de>
 Installed-Size: 39
-Depends: python3.7 (>= 3.7.3)
+Depends: python3.7 (>= 3.7.3), python3-requests (>= 2.21)
 Section: video
 Priority: optional
 Homepage: https://github.com/pitjup/a1epg
